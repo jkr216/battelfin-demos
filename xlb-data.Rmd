@@ -1,0 +1,256 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### The data science work flow
+
+```{r setup, include = FALSE, warning=FALSE, message=FALSE}
+
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(tibbletime)
+library(scales)
+library(highcharter)
+library(broom)
+library(PerformanceAnalytics)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA)
+```
+
+
+### Introducing R and RStudio
+
+    + Statistical programming language -> by data scientists, for data scientists
+    + Base R + 17,000 packages
+    + RStudio
+    + Shiny
+  
+
+### Packages for today
+
+
+```{r, eval = FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(tibbletime)
+library(scales)
+library(highcharter)
+library(broom)
+library(PerformanceAnalytics)
+```
+
+More packages for finance here:
+https://cran.r-project.org/web/views/Finance.html
+
+### Today's project
+
+
+    + Buy when the SP500 50-day SMA is above the 200-day SMA (a 'golden cross')
+    
+    + Sell when the 50-day SMA moves below the 200-day SMA (a 'death cross'). 
+
+    + Code up that strategy
+
+    + Visualize its results and descriptive statistics
+
+    + Compare it to buy-and-hold
+    
+    + Add secondary logic, visualize that strategy (time permitting)
+
+    + Conclude by building a Shiny dashboard for further exploration
+    
+    + Data science work flow
+
+
+### Import data 
+
+We will be working with SP500 and treasury bills data so that when we exit the SP500 we can invest in treasuries and get some return.
+
+We can use the `tidyquant` package and it's `tq_get()` function to grab the data from Yahoo! Finance. 
+
+```{r}
+
+symbols <- c("XLB", "SPY")
+
+
+prices <- 
+  tq_get(symbols, 
+         get = "stock.prices",
+         from = "1999-01-01") %>% 
+  group_by(symbol)
+
+prices  %>% 
+  slice(1:3)
+
+prices %>% 
+  skimr::skim()
+```
+
+
+Start with a line chart.
+
+We will use `highcharter` to create a quick interactive chart.
+
+```{r}
+library(highcharter)
+prices %>%
+  hchart(., 
+         hcaes(x = date, y = adjusted, group = symbol),
+         type = "line") %>% 
+  hc_title(text = "
+           Explore prices")
+```
+
+
+```{r}
+returns <- 
+prices %>% 
+  select(symbol, date, adjusted) %>% 
+  mutate(returns = log(adjusted) - log(lag(adjusted)))
+
+```
+
+```{r}
+returns %>% 
+  tq_performance(Ra = returns,
+                 performance_fun = table.Stats) %>% 
+  
+  # format for easy viewing
+  t() %>% 
+  knitr::kable()
+```
+
+
+```{r}
+returns %>% 
+  hchart(., hcaes(x = date, y = returns, group = symbol),
+               type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+```
+
+
+
+```{r}
+library(readr)
+hpi <- 
+  read_csv("fmhpi_master_file (2).csv", 
+    col_types = cols(GEO_Code = col_skip(), 
+        Index_NSA = col_skip())) %>% 
+  unite("date", c("Year", "Month"), sep = "-") %>% 
+  mutate(date = ymd(parse_date_time(date, "%Y%m")))
+
+
+hpi %>%
+  select(GEO_Type) %>% 
+  distinct()
+```
+
+```{r}
+hpi_for_join <- 
+  hpi %>% 
+  filter(GEO_Type == "US" & date >= "1999-01-01") %>% 
+  rename(housing_index = Index_SA) %>% 
+  dplyr::select(-GEO_Name)
+```
+
+Looks good, except this is monthly data, and our price data is daily. 
+
+```{r}
+xlb_hpi_joined <- 
+  returns %>% 
+  full_join(hpi_for_join, by = "date")
+```
+
+```{r}
+xlb_hpi_joined %>% 
+  hchart(., hcaes(x = date, y = adjusted, group = symbol),
+         type = "line") %>%
+  hc_add_series(xlb_hpi_joined, hcaes(x = date, y = housing_index), type = "line")
+
+xlb_hpi_joined %>%
+  ggplot(aes(x = date, y = adjusted, color = symbol)) +
+  geom_line() +
+  geom_line(aes(y = housing_index, color = GEO_Type))
+```
+
+```{r}
+prices %>% 
+  select(date, symbol, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month")) %>% 
+  full_join(hpi_for_join) %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index))) %>% 
+  ggplot(aes(x = date, y = adjusted, color = symbol)) +
+  geom_line() +
+  geom_line(aes(y = housing_index, color = GEO_Type)) +
+    facet_wrap(~symbol)
+```
+
+```{r}
+xlb_hpi_joined_monthly <-
+prices %>% 
+  select(date, symbol, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month")) %>% 
+  full_join(hpi_for_join) %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         asset_returns = log(adjusted) - log(lag(adjusted))) %>% 
+  na.omit()
+  
+xlb_hpi_joined_monthly %>% 
+  summarise(mean_house_change = mean(hpi_change))
+```
+
+### Add some trading logic
+
+If the previous two HPI monthly changes were below mean, exit the XLB position.
+
+```{r}
+xlb_hpi_joined_monthly %>%
+  filter(symbol == "XLB") %>% 
+  mutate(signal = if_else(
+                            lag(hpi_change, 1) < mean(hpi_change) &
+                            lag(hpi_change, 2) < mean(hpi_change) &
+                            lag(hpi_change, 3) < mean(hpi_change),
+                            0, 1),
+         trend_returns = if_else(lag(signal) == 1, 
+                                 (signal * asset_returns), 0),
+         buy_hold_returns = (asset_returns)) %>% 
+  select(date, symbol, buy_hold_returns, trend_returns) %>%
+  na.omit() %>% 
+  mutate(
+         trend_growth = accumulate(1 + trend_returns, `*`),
+         buy_hold_growth = accumulate(1 + buy_hold_returns, `*`))
+  
+```
+
+```{r}
+xlb_hpi_joined_monthly %>%
+  filter(symbol == "SPY") %>% 
+  mutate(signal = if_else(
+                             lag(hpi_change, 1) < 0, #mean(hpi_change), #&
+                            # lag(hpi_change, 2) < mean(hpi_change) &
+                            # lag(hpi_change, 3) < mean(hpi_change) &
+                            # lag(hpi_change, 4) < mean(hpi_change),
+                            0, 1),
+         trend_returns = if_else(lag(signal) == 1, 
+                                 (signal * asset_returns), 0),
+         buy_hold_returns = (asset_returns)) %>% 
+  select(date, symbol, buy_hold_returns, trend_returns) %>%
+  na.omit() %>% 
+  mutate(
+         trend_growth = accumulate(1 + trend_returns, `*`),
+         buy_hold_growth = accumulate(1 + buy_hold_returns, `*`)) %>%
+  select(date, symbol, trend_growth, buy_hold_growth) %>%
+  gather(strategy, growth, -date, -symbol) %>% 
+  #filter(symbol == "XLB") %>% 
+  hchart(., hcaes(x = date, y = growth, group = strategy), type = "line") %>% 
+  hc_tooltip(pointFormat = "{point.strategy}: ${point.growth: .2f}")
+  
+```
+
