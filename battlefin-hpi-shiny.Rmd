@@ -1,0 +1,141 @@
+---
+title: "Trend Strategy"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    source_code: embed
+---
+
+```{r setup, message = FALSE}
+
+library(tidyquant)
+library(tidyverse)
+library(timetk)
+library(broom)
+library(tibbletime)
+library(highcharter)
+library(scales)
+library(flexdashboard)
+
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+load("names_for_shiny.RData")
+load("hpi_for_shiny.RData")
+
+```
+
+
+Sidebar {.sidebar}
+=====================================
+  
+```{r}
+
+
+selectInput("geog", "house geog", "AL", choices = names_for_shiny)
+
+
+dateRangeInput("date", "Period chart",
+               start  = "2000-01-01",
+               end    = "2018-11-01",
+               min    = "1975-01-01",
+               max    = "2018-11-01",
+               format = "yyyy-mm-dd",
+               sep = "-")
+
+
+actionButton("go", "Submit")
+```
+
+
+```{r}
+hpi <- eventReactive(input$go, {
+  
+  
+  hpi_for_shiny %>% 
+    filter(GEO_Name == input$geog &
+          date > input$date[1] &
+          date < input$date[2]) %>%
+    ungroup() %>%
+    select(date, GEO_Name, housing_index, hpi_change)
+})
+
+geog <- eventReactive(input$go, (input$geog))
+```
+
+Freddie HPI Data
+=====================================
+
+Row 1 {.tabset}
+---------------------
+
+### Housing Index
+
+```{r}
+renderHighchart({
+  
+  geog_hpi_hc <- 
+  hpi() %>%
+  select(-hpi_change) %>% 
+  tk_xts(date_var = date) 
+  
+  highchart(type = "stock") %>% 
+  hc_title(text = paste("HPI for", geog(), sep = " ")) %>%
+  hc_add_series(geog_hpi_hc$housing_index, color = "cornflowerblue",  name = geog()) %>%
+  hc_add_theme(hc_theme_flat()) %>%
+  hc_navigator(enabled = FALSE) %>% 
+  hc_scrollbar(enabled = FALSE) %>% 
+  hc_legend(enabled = TRUE) %>% 
+  hc_yAxis(labels = list(format = "{value:.2f}")) %>% 
+  hc_tooltip(pointFormat = "{point.series.name}: {point.y:.2f}")
+  
+})
+```
+
+### Monthly Change
+
+```{r}
+renderHighchart({
+
+  hpi() %>%
+  hchart(., hcaes(x = date, y = hpi_change), type = "scatter") %>% 
+  hc_title(text = paste("Monthly HPI change for", geog(), sep = " ")) %>%
+  hc_add_theme(hc_theme_flat()) %>%
+  hc_yAxis(labels = list(format = "{value:,.2f}")) %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+  
+})
+```
+
+### Monthly Change Colored
+
+```{r}
+renderHighchart({
+  hpi() %>% 
+  mutate(
+         color_of_bars = if_else(hpi_change < lag(hpi_change) |
+                                  hpi_change < 0,# or 0 or mean(na.omit(hpi_change))
+                                 "#ffe6ea", "#6495ed")) %>%
+  na.omit() %>% 
+  hchart(., hcaes(x = date, y = hpi_change, color = color_of_bars), type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+          
+})
+```
+
+### Monthly Change Tally
+
+```{r}
+renderHighchart({
+  hpi() %>% 
+  mutate(pos_neg = case_when(
+                                  hpi_change < 0 ~ "negative",
+                                  hpi_change > 0 ~ "positive")) %>%
+  count(pos_neg) %>% 
+  na.omit() %>% 
+  hchart(., hcaes(x = pos_neg, y = n, color = pos_neg), type = "column", pointWidth = 30) %>% 
+  hc_title(text = paste("Num Pos v. Neg Months between", input$date[1], "&", input$date[2], sep = " "), align = "center")
+          
+})
+```

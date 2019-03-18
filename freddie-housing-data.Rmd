@@ -1,0 +1,45 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Welcome, who knows or uses R, shiny, how often. here's what it is and why so popular. it's the packages and the ease of use. the focus is on the data, not on being a computer scientist. So we get to spend our creative energy on the stuff that matters. We'll see that working with disparate data sets is not easy, we need to think about the data a lot. R gives us the flexibility to do anything but doesn't make it too taxing.
+
+
+This wouldn't be a session about R and RStudio if we didn't code up and go through some actual data, so I hope everyone was ready to start their data by writing code and digging in! 
+
+We are going to grab some market data on SPY, XLB the fin services SPDR ETF, and Home Depot, do some initial wrangling and exploration, then we're going to get data from a totally new place - Freddie Mac, which publishes a housing price index, and we're oing to see if that new data source provides us with any useful insights or signals about the market data. Not exactly alt data, but this is public so you can reproduce this, and the paradigm maps on to an alt data workflow in the sense that we are going to start with some market data, then get new data, mash them together and make them compatible, then try to extract something useful.  If there's time, we'll build an interactive dashboard so others could also explore our work and make their own decisions/add questions ideas.
+
+Let's get to it!
+
+```{r}
+hpi_for_shiny <- 
+  read_csv("fmhpi_master_file (2).csv",
+    col_types = cols(GEO_Code = col_skip(),
+        GEO_Type = col_skip(), Index_NSA = col_skip())) %>%
+  rename(housing_index = Index_SA) %>%
+  group_by(GEO_Name) %>%
+  unite("date", c("Year", "Month"), sep = "-") %>% 
+  filter(str_count(GEO_Name) == 2) %>%
+  mutate(date = ymd(parse_date_time(date, "%Y%m"))) %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index))) %>%
+  na.omit()
+
+hpi_for_shiny %>% 
+  filter(GEO_Name == "AL") %>% 
+  ungroup() %>% 
+  tk_xts(date_var = date)
+
+save(hpi_for_shiny, file = "hpi_for_shiny.RData")
+
+names_for_shiny <-
+  hpi_for_shiny %>%
+  select(GEO_Name) %>%
+  filter(str_count(GEO_Name) == 2) %>%
+  slice(1) %>%
+  pull()
+
+save(names_for_shiny, file = "names_for_shiny.RData")
+```
+
+
+

@@ -1,0 +1,397 @@
+---
+title: "Reproducible Finance"
+subtitle: "with R"
+author: "Jonathan Regenstein"
+date: "`r Sys.Date()`"
+output:
+  xaringan::moon_reader:
+    lib_dir: libs
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+---
+
+
+```{r setup, include = FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA)
+options(htmltools.dir.version = FALSE)
+
+library(tidyverse)
+library(tidyquant)
+library(tibbletime)
+library(timetk)
+library(highcharter)
+library(broom)
+```
+
+
+# Introducing R and RStudio
+
++ Statistical programming language -> by data scientists, for data scientists
++ Base R + 17,000 packages
++ RStudio
++ Shiny
++ sparklyr -> big data 
++ tensorflow -> AI
++ Rmarkdown -> reproducible reports
++ database connectors
++ htmlwidgets
+
+---
+
+# Quant pipeline
+
+![](quant-pipeline.png)
+
+www.business-science.io/business/2018/09/18/data-science-team.html
+
+---
+
+# Data Sci Paradigm
+
+![](tidyverse-paradigm.png)
+
+---
+
+# Packages for finance
+
+```{r, eval = FALSE}
+library(PerformanceAnalytics)
+library(PortfolioAnalytics)
+library(TTR)
+library(tidyquant)
+library(quantmod)
+library(xts)
+```
+
+
+List of packages for finance here:
+https://cran.r-project.org/web/views/Finance.html
+
+---
+
+# Packages for data visualization
+
+
+```{r, eval = FALSE}
+library(ggplot2)
+library(highcharter)
+library(shiny)
+```
+
+---
+
+# Today's Project
+
+    + Import and wrangle data on the financial services ETF XLF
+    
+    + Import and wrangle data from Freddie Mac on housing prices
+    
+    + Try to find a useful signal and code up a toy strategy
+
+    + Visualize results and descriptive statistics
+
+    + Compare it to buy-and-hold
+
+    + Conclude by building a Shiny dashboard for further exploration
+    
+    + to the IDE
+    
+---
+
+# Import Data
+
+- Excel using `read_excel`
+
+- csv using `read_csv`
+
+- public data sourcesusing `getSymbols` or `tq_get`
+
+- sql, or some internal database, using `dbConnect`
+
+- increasingly common via API with `httr` and `jsonlite`
+
+---
+
+# XLF: fin services ETF
+
+`symbols <- "XLF"`
+
+`tq_get(symbols, from  = "1998-01-01")` 
+
+
+```{r, echo = FALSE}
+
+symbols <- "XLF"
+
+
+prices <- 
+  tq_get(symbols, 
+         get = "stock.prices",
+         from = "1998-01-01")
+
+
+prices %>% 
+  slice(1:7)
+```
+
+---
+
+### Daily Prices plot
+
+```{r, echo = FALSE}
+prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>% 
+  hchart(., 
+         hcaes(x = date, y = adjusted),
+         type = "line") %>% 
+  hc_title(text = "Explore prices") %>% 
+  hc_tooltip(pointFormat = "XLF: ${point.y: .2f}") 
+```
+
+---
+
+### Calculate returns
+
+`mutate(returns = log(adjusted) - log(lag(adjusted)))`
+
+```{r, echo = FALSE}
+returns <- 
+prices %>% 
+  select(date, adjusted) %>% 
+  mutate(returns = log(adjusted) - log(lag(adjusted)))
+
+returns %>% 
+  slice(1:7)
+```
+
+---
+
+### Scatter returns
+
+```{r, echo = FALSE}
+returns %>%
+  hchart(., hcaes(x = date, y = returns),
+               type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+```
+
+---
+
+### Freddie Mac Data
+`read_csv("fmhpi_master_file (2).csv")`
+
+```{r, echo = FALSE}
+hpi_raw <- 
+  read_csv("fmhpi_master_file (2).csv")
+
+hpi_raw %>%
+  glimpse()
+```
+
+---
+
+### Remember our prices format
+
+```{r, echo = FALSE}
+prices %>% 
+  slice(1:3)
+```
+
+
+---
+
+### Let's clean up the Freddie data
+
+    + Create a date column
+    + select just the USA
+    + filter to recent data, since 1982
+    + give the index column a better name  
+    + delete the unneeded columna
+
+
+---
+
+### Unite the Columns!
+
+`unite("date", c("Year", "Month"), sep = "-")`
+
+```{r, echo = FALSE}
+hpi_wrangled <- 
+  hpi_raw %>% 
+  select(-GEO_Code, -Index_NSA, -GEO_Name) %>% 
+  unite("date", c("Year", "Month"), sep = "-") %>% 
+  mutate(date = ymd(parse_date_time(date, "%Y%m"))) %>% 
+  filter(GEO_Type == "US" & date >= "1982-01-01") %>% 
+  rename(housing_index = Index_SA, geog = GEO_Type)
+
+hpi_wrangled %>% 
+  head()
+```
+
+---
+
+### Monthly Change Color
+
+```{r, echo = FALSE}
+hpi_wrangled %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         color_of_bars = if_else(hpi_change < lag(hpi_change) |
+                                  hpi_change < 0,
+                                 "#ff3333", "#6495ed")) %>%
+  na.omit() %>% 
+  hchart(., hcaes(x = date, y = hpi_change, color = color_of_bars), type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+```
+
+---
+
+### Monthly Change Frequency
+
+```{r, echo = FALSE}
+hpi_wrangled %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         pos_neg = case_when(
+                                  hpi_change < 0 ~ "negative",# or 0 or mean(na.omit(hpi_change))
+                                  hpi_change > 0 ~ "positive")) %>%
+  count(pos_neg) %>% 
+  na.omit() %>% 
+  hchart(., hcaes(x = pos_neg, y = n, color = pos_neg), type = "column", pointWidth = 30) %>% 
+  hc_title(text = "Num Pos v. Neg Months", align = "center")
+
+```
+
+---
+
+### To monthly
+
+`as_period("monthly", side = "start")`
+
+```{r, echo=FALSE }
+
+prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>% 
+  head(3)
+```
+
+
+---
+
+### To monthly, first day of month
+
+`floor_date(date, "month")`
+
+```{r, echo = FALSE}
+prices_monthly <- 
+  prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month"))
+
+prices_monthly %>% 
+  slice(1:3)
+```
+
+---
+
+### Coerce and join
+
+`full_join(hpi_wrangled)`
+
+```{r, echo = FALSE}
+xlf_hpi_joined <-
+  prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month")) %>% 
+  left_join(hpi_wrangled)
+
+xlf_hpi_joined %>% 
+  slice(1:3)
+```
+
+---
+
+### Chart our joined data
+
+```{r, echo = FALSE}
+xlf_hpi_joined %>% 
+  hchart(., hcaes(x = date, y = adjusted),
+         type = "line") %>%
+  hc_add_series(hpi_wrangled, hcaes(x = date, y = housing_index), 
+                type = "line", name = "housing_index")
+
+```
+
+---
+
+### Signal Chart
+
+```{r, echo = FALSE}
+
+xlf_hpi_joined %>%
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         asset_returns = log(adjusted) - log(lag(adjusted))) %>% 
+  na.omit() %>% 
+  mutate(signal = if_else(
+                            lag(hpi_change, 1) < 0,
+                            0, 1),
+         trend_returns = if_else(lag(signal) == 1, 
+                                 (signal * asset_returns), 0),
+         buy_hold_returns = (asset_returns)) %>% 
+  select(date, buy_hold_returns, trend_returns) %>%
+  na.omit() %>% 
+  mutate(
+         xlf_signal_growth = accumulate(1 + trend_returns, `*`),
+         buy_hold_growth = accumulate(1 + buy_hold_returns, `*`)) %>%
+  select(date, xlf_signal_growth, buy_hold_growth) %>%
+  gather(strategy, growth, -date) %>% 
+  hchart(., hcaes(x = date, y = growth, group = strategy), type = "line") %>% 
+  hc_tooltip(pointFormat = "{point.strategy}: ${point.growth: .2f}")
+```
+
+
+---
+
+# Other Packages of Interest
+
+```{r, eval = FALSE}
+library(forecast) # Good out of the box forecasting tools. Useful for macro trends.
+library(h20) # machine learning libraries
+library(keras) # deep learning tensorflow.rstudio.com
+library(lime) # for ML white-boxing
+library(ranger) # random forest
+library(recipes) # for ML preprocessing
+library(rsample) # for resampling
+library(parsnip) # new package for consistent model interface
+library(caret) # classification and regression
+library(tidytext) # parse text and mining
+library(tidyposterior) # posthoc after resampling
+```
+
+---
+
+.pull-left[
+![](r4ds.png)
+
+![](eslr.png)
+
+]
+
+.pull-right[
+
+![](RF-book-cover1.png)
+
+![](islr.png)
+
+]
+

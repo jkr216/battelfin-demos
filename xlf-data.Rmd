@@ -1,0 +1,352 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### Getting Started
+
+```{r setup, include = FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(tibbletime)
+library(highcharter)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, comment = NA)
+
+```
+
+
+### Introducing R and RStudio
+
+    + Statistical programming language -> by data scientists, for data scientists
+    + Base R + 17,000 packages
+    + RStudio
+    + Shiny
+    + sparklyr -> big data 
+    + tensorflow -> AI
+    + Rmarkdown -> reproducible reports
+    + database connectors
+    + htmlwidgets
+  
+
+### Packages for today
+
+
+```{r, eval = FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+library(tibbletime)
+library(scales)
+library(highcharter)
+library(broom)
+library(PerformanceAnalytics)
+```
+
+More packages for finance here:
+https://cran.r-project.org/web/views/Finance.html
+
+### Today's project
+
+
+    + Import and wrangle data on the financial services SPDR ETF
+    
+    + Import and wrangle data from Freddie Mac on housing prices
+    
+    + Try to find a signal and code up a toy strategy
+
+    + Visualize its results and descriptive statistics
+
+    + Compare it to buy-and-hold
+
+    + Conclude by building a Shiny dashboard for further exploration
+    
+    + Data science work flow
+
+
+### Import data 
+
+
+We will use the `tidyquant` package and it's `tq_get()` function to grab the data from public sources.
+
+In real life, this would be a pointer to your proprietary data source for market data. Probably a data base or a data lake somewhere, possibly an excel spreadsheet or csv.
+
+```{r}
+
+symbols <- "XLF"
+
+
+prices <- 
+  tq_get(symbols, 
+         get = "stock.prices",
+         from = "1998-01-01")
+
+
+prices %>% 
+  slice(1:5)
+```
+
+
+Start with a line chart.
+
+We will use `highcharter` to create a quick interactive chart.
+
+```{r}
+
+hc_prices_daily <- 
+prices %>% 
+  hchart(., 
+         hcaes(x = date, y = adjusted),
+         type = "line") %>% 
+  hc_title(text = "Explore prices") %>% 
+  hc_tooltip(pointFormat = "XLF: ${point.y: .2f}")
+
+hc_prices_daily
+```
+
+Why start with a simple line chart? Always good to make sure our data isn't corrupted or missing values. 
+Transform to daily returns
+
+```{r}
+returns <- 
+prices %>% 
+  select(date, adjusted) %>% 
+  mutate(returns = log(adjusted) - log(lag(adjusted))) %>% 
+  na.omit()
+
+returns %>% 
+  slice(1:5)
+
+```
+
+Get some quick summary stats on the history of daily returns using the `table.Stats` function.
+
+```{r}
+table.Stats(returns$returns)
+```
+
+
+```{r}
+hc_returns_daily <- 
+returns %>%
+  hchart(., hcaes(x = date, y = returns),
+               type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+
+hc_returns_daily
+```
+
+Now let's grab some data from a different source, that we think might be related to this market price and returns data. 
+
+In this case, it is housing data that is published by Freddie Mac. Not exactly an exotic source of data, but Freddie does produce some great data, it's publicly available so we can hack around with it, and this is an illustrative example of what we might confront when working with alternative data. It's coming from a new source, not a provider of our market data. That means it will be in a different format. In this case, it's a csv file. That also means it almost certainly won't be in a structure that fits perfectly with our other data. We'll need to import it, wrangle it, mash it together (or join it) it with our market data, then start investigating. 
+
+
+Here the source: 
+http://www.freddiemac.com/research/indices/house-price-index.html
+
+From the internet:
+
+```{r, eval = FALSE}
+# not run
+fmhpi_master_file <- read_csv("http://www.freddiemac.com/research/docs/fmhpi_master_file.csv")
+View(fmhpi_master_file)
+```
+
+From a local CSV:
+
+```{r}
+
+hpi_raw <- 
+  read_csv("fmhpi_master_file (2).csv")
+
+View(hpi_raw)
+
+hpi_raw %>%
+  glimpse()
+```
+
+1) Create a date column
+2) filter just the USA
+3) filter to recent data, since 1990
+4) give the index column a better name
+5) delete the unneeded columns
+
+
+```{r}
+hpi_wrangled <- 
+  hpi_raw %>% 
+  select(Year, Month, GEO_Type, Index_SA) %>% 
+  rename(housing_index = Index_SA, geog = GEO_Type) %>%
+  unite("date", c("Year", "Month"), sep = "-") %>% 
+  mutate(date = ymd(parse_date_time(date, "%Y%m"))) %>% 
+  filter(geog == "US" & date >= "1998-01-01")
+
+View(hpi_wrangled)
+```
+
+How about monthly changes?
+
+```{r}
+hpi_wrangled %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index))) %>% 
+  head()
+
+```
+
+Some quick vis's on monthly changes
+
+```{r}
+hpi_wrangled %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         color_of_bars = if_else(hpi_change < lag(hpi_change) |
+                                  hpi_change < 0,
+                                 "#ffe6ea", "#6495ed")) %>%
+  na.omit() %>% 
+  hchart(., hcaes(x = date, y = hpi_change, color = color_of_bars), type = "scatter") %>% 
+  hc_tooltip(pointFormat = '{point.x: %Y-%m-%d} <br>
+                            {point.y:.4f}%')
+          
+```
+
+
+```{r}
+hpi_wrangled %>% 
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         pos_neg = case_when(
+                                  hpi_change < 0 ~ "negative",# or 0 or mean(na.omit(hpi_change))
+                                  hpi_change > 0 ~ "positive")) %>%
+  count(pos_neg) %>% 
+  na.omit() %>% 
+  hchart(., hcaes(x = pos_neg, y = n, color = pos_neg), type = "column", pointWidth = 30) %>% 
+  hc_title(text = "Num Pos v. Neg Months", align = "center")
+
+```
+
+
+Looks good, except this is monthly data, and our price data is daily. Now we have a decision: how to make this data align so we can start exploring potential relationships.
+
+```{r}
+prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>% 
+  head()
+```
+
+Wait, look real close - the first trading day of each month is not the 1st of each month, but Freddie always reports data as of the 1st. 
+
+Let's coerce it to the first of the month using `floor_date()`. 
+
+```{r}
+prices_monthly <- 
+  prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month"))
+
+prices_monthly %>% 
+  slice(1:7)
+```
+
+Okay, that worked, we're ready to join this data, but note we just did something important. We changed the date. Maybe that's no big deal. But maybe it is. Maybe you or your colleagues or your team think this is the worst idea and we should, instead, coerce the Freddie Data to match our market data.  If you turn all your data wrangling and prep over to someone else, make sure they notate it. If you do it yourself, make sure you notate! Future you will be happy.
+
+
+```{r}
+xlf_hpi_joined <-
+  prices %>% 
+  select(date, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>%
+  mutate(date = floor_date(date, "month")) %>% 
+  full_join(hpi_wrangled)
+
+xlf_hpi_joined %>% 
+  slice(1:7)
+```
+
+
+```{r}
+
+xlf_hpi_joined_returns <-
+  xlf_hpi_joined %>%  
+  mutate(hpi_change = log(housing_index) - log(lag(housing_index)),
+         asset_returns = log(adjusted) - log(lag(adjusted))) %>% 
+  na.omit()
+
+xlf_hpi_joined_returns %>% 
+  slice(1:7)
+```
+
+
+
+```{r}
+xlf_hpi_hc <- 
+xlf_hpi_joined_returns %>% 
+  hchart(., hcaes(x = date, y = adjusted),
+         type = "line") %>%
+  hc_add_series(hpi_wrangled, hcaes(x = date, y = housing_index), 
+                type = "line", name = "housing_index")
+
+xlf_hpi_hc
+```
+
+Take a look. Nothing too egregious here but that plateau around February 2006 looks like something. 
+
+
+### Add some trading logic
+
+Let's see if that Freddie data might give us a useful signal. We could head to a predictive model here - maybe for HP's sales growth or the revenue/yield of XLB. 
+
+For now, let's code up a simple algorithm: 
+if the hpi monthly change starts a flat or negative trend, let's exit our positions until they pick back up.
+
+If the previous three HPI monthly changes were below mean, exit the XLB position.
+
+The key here is the `if_else()` call in R. We can implement whatever logic we want and see the results. The data wrangling was the hard part.
+
+Let's look at just XLB, and see if that plateau might have improved on a buy hold strategy, by avoiding that big drop.
+
+```{r}
+xlf_hpi_joined_returns %>%
+  mutate(signal = if_else(
+                            lag(hpi_change, 1) < 0,
+                            0, 1),
+         trend_returns = if_else(lag(signal) == 1, 
+                                 (signal * asset_returns), 0),
+         buy_hold_returns = (asset_returns)) %>% 
+  select(date, buy_hold_returns, trend_returns) %>%
+  na.omit() %>% 
+  mutate(
+         trend_growth = accumulate(1 + trend_returns, `*`),
+         buy_hold_growth = accumulate(1 + buy_hold_returns, `*`)) %>%
+  select(date, trend_growth, buy_hold_growth) %>%
+  gather(strategy, growth, -date) %>% 
+  hchart(., hcaes(x = date, y = growth, group = strategy), type = "line") %>% 
+  hc_tooltip(pointFormat = "{point.strategy}: ${point.growth: .2f}")
+```
+
+To Shiny! 
+
+
+
+Coerce Freddie to match the market data if curious
+
+```{r}
+
+hpi_year_mon <-
+hpi_raw %>%
+  filter(GEO_Type == "US") %>% 
+  unite("new_date", c("Year", "Month"), sep = "-") %>% 
+  select(new_date, housing_index = Index_NSA)
+
+prices %>% 
+  select(date, symbol, adjusted) %>%
+  as_tbl_time(index = date) %>% 
+  as_period("monthly", side = "start") %>% 
+  mutate(new_date = paste(year(date), month(date), sep ="-")) %>% 
+  group_by(symbol) %>% 
+  left_join(hpi_year_mon, by = "new_date") %>% 
+  select(-new_date)
+```
+
